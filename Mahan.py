@@ -12,7 +12,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("سلام! من یه ربات ساده‌ام.")
 
 # توکن رباتت رو اینجا بذار
-TOKEN = "توکن_ربات_تو_اینجا"
+TOKEN = "7203768758:AAGLd6W4k68fIh0NY1DlPdGEH7eQq55Wuj0"
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
